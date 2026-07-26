@@ -1,0 +1,622 @@
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ProximityPromptService = game:GetService("ProximityPromptService")
+local TweenService = game:GetService("TweenService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+---------------------------------------------------------
+-- KONFIGURASI TWEEN & OTOMASI
+---------------------------------------------------------
+local TWEEN_SPEED = 100 -- Kecepatan Tween (Studs per detik).
+local BOMB_EXPLODE_DELAY = 3.2 -- Durasi tunggu hingga bom meledak (detik)
+local COLLECT_RADIUS = 25 -- Jarak radius deteksi item drop di sekitar player (studs)
+local MAX_COLLECT_TIMEOUT = 12 -- Batas waktu maksimal tunggu collect (detik) agar tidak stuck
+
+-- Folder Target di Workspace
+local targetPath = workspace:WaitForChild("MountainDecorations", 10)
+local bouldersFolder = targetPath and targetPath:WaitForChild("Boulders", 10)
+
+-- Remote Events untuk Dig
+local Remotes = ReplicatedStorage:WaitForChild("Remotes", 2)
+local DigEvent = Remotes and Remotes:WaitForChild("DigRequest", 2) or nil
+
+-- Switch Status Kontrol
+local isDiggingActive = false
+local isCollectActive = false
+local isSequenceRunning = false
+local currentTargetModel = nil -- Menyimpan target aktif saat ini
+
+---------------------------------------------------------
+-- 1. UTILITY: DYNAMIC TARGET FINDER
+---------------------------------------------------------
+local function GetNextTarget()
+    if not bouldersFolder then return nil end
+
+    local char = player.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+    local closestTarget = nil
+    local shortestDistance = math.huge
+
+    for _, child in ipairs(bouldersFolder:GetChildren()) do
+        if child and child.Parent then
+            local pos = nil
+            if child:IsA("Model") then
+                pos = child.PrimaryPart and child.PrimaryPart.Position or child:GetPivot().Position
+            elseif child:IsA("BasePart") then
+                pos = child.Position
+            end
+
+            if pos then
+                if hrp then
+                    local dist = (hrp.Position - pos).Magnitude
+                    if dist < shortestDistance then
+                        shortestDistance = dist
+                        closestTarget = child
+                    end
+                else
+                    return child
+                end
+            end
+        end
+    end
+
+    return closestTarget
+end
+
+local function GetTargetModelPosition(target)
+    local obj = target or currentTargetModel
+    if obj and obj.Parent then
+        return obj:IsA("Model") and (obj.PrimaryPart and obj.PrimaryPart.Position or obj:GetPivot().Position) or obj.Position
+    end
+    return nil
+end
+
+---------------------------------------------------------
+-- 2. PEMBUATAN UI RETRO (WINDOWS 95)
+---------------------------------------------------------
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "RetroMiningUI"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = playerGui
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainFrame"
+mainFrame.Size = UDim2.new(0, 320, 0, 200)
+mainFrame.Position = UDim2.new(0.5, -160, 0.35, -100)
+mainFrame.BackgroundColor3 = Color3.fromRGB(192, 192, 192)
+mainFrame.BorderSizePixel = 2
+mainFrame.BorderColor3 = Color3.fromRGB(255, 255, 255)
+mainFrame.Active = true
+mainFrame.Draggable = true
+mainFrame.Parent = screenGui
+
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, -4, 0, 24)
+titleBar.Position = UDim2.new(0, 2, 0, 2)
+titleBar.BackgroundColor3 = Color3.fromRGB(0, 0, 128)
+titleBar.BorderSizePixel = 0
+titleBar.Parent = mainFrame
+
+local titleText = Instance.new("TextLabel")
+titleText.Size = UDim2.new(1, -30, 1, 0)
+titleText.Position = UDim2.new(0, 6, 0, 0)
+titleText.BackgroundTransparency = 1
+titleText.Text = "C:\\AUTO_MINING_SYSTEM.EXE"
+titleText.TextColor3 = Color3.fromRGB(255, 255, 255)
+titleText.Font = Enum.Font.Code
+titleText.TextSize = 13
+titleText.TextXAlignment = Enum.TextXAlignment.Left
+titleText.Parent = titleBar
+
+local closeButton = Instance.new("TextButton")
+closeButton.Size = UDim2.new(0, 18, 0, 18)
+closeButton.Position = UDim2.new(1, -21, 0, 3)
+closeButton.BackgroundColor3 = Color3.fromRGB(192, 192, 192)
+closeButton.Text = "X"
+closeButton.TextColor3 = Color3.fromRGB(0, 0, 0)
+closeButton.Font = Enum.Font.SourceSansBold
+closeButton.TextSize = 12
+closeButton.BorderSizePixel = 1
+closeButton.Parent = titleBar
+
+closeButton.MouseButton1Click:Connect(function()
+    screenGui.Enabled = false
+end)
+
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Size = UDim2.new(1, -20, 0, 30)
+statusLabel.Position = UDim2.new(0, 10, 0, 35)
+statusLabel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+statusLabel.TextColor3 = Color3.fromRGB(0, 255, 0)
+statusLabel.Font = Enum.Font.Code
+statusLabel.TextSize = 12
+statusLabel.Text = "> SYS_INIT: PRESS START"
+statusLabel.BorderSizePixel = 2
+statusLabel.BorderColor3 = Color3.fromRGB(128, 128, 128)
+statusLabel.Parent = mainFrame
+
+local startButton = Instance.new("TextButton")
+startButton.Size = UDim2.new(0, 140, 0, 35)
+startButton.Position = UDim2.new(0, 10, 0, 80)
+startButton.BackgroundColor3 = Color3.fromRGB(192, 192, 192)
+startButton.Text = "[ START SEQUENCE ]"
+startButton.TextColor3 = Color3.fromRGB(0, 0, 0)
+startButton.Font = Enum.Font.Code
+startButton.TextSize = 11
+startButton.BorderSizePixel = 2
+startButton.Parent = mainFrame
+
+local stopButton = Instance.new("TextButton")
+stopButton.Size = UDim2.new(0, 140, 0, 35)
+stopButton.Position = UDim2.new(1, -150, 0, 80)
+stopButton.BackgroundColor3 = Color3.fromRGB(192, 192, 192)
+stopButton.Text = "[ STOP ]"
+stopButton.TextColor3 = Color3.fromRGB(0, 0, 0)
+stopButton.Font = Enum.Font.Code
+stopButton.TextSize = 11
+stopButton.BorderSizePixel = 2
+stopButton.Parent = mainFrame
+
+local footerLabel = Instance.new("TextLabel")
+footerLabel.Size = UDim2.new(1, -20, 0, 40)
+footerLabel.Position = UDim2.new(0, 10, 0, 130)
+footerLabel.BackgroundTransparency = 1
+footerLabel.Text = "[SEQUENCE]: LOOP TARGETS -> TWEEN -> BOMB -> DIG -> COLLECT ALL"
+footerLabel.TextColor3 = Color3.fromRGB(0, 0, 128)
+footerLabel.Font = Enum.Font.Code
+footerLabel.TextSize = 10
+footerLabel.TextWrapped = true
+footerLabel.Parent = mainFrame
+
+---------------------------------------------------------
+-- 3. HIGHLIGHT & UTILITIES
+---------------------------------------------------------
+local voltiteHighlightCache = {}
+
+local function applyBoulderESP(boulder)
+    if not boulder:IsA("Model") and not boulder:IsA("BasePart") then return end
+
+    for _, child in ipairs(boulder:GetDescendants()) do
+        if child:IsA("BasePart") then
+            child.Transparency = 0
+            child:GetPropertyChangedSignal("Transparency"):Connect(function()
+                if child.Transparency > 0 then child.Transparency = 0 end
+            end)
+        end
+    end
+
+    local highlight = voltiteHighlightCache[boulder] or boulder:FindFirstChild("BoulderESP")
+    if not highlight then
+        highlight = Instance.new("Highlight")
+        highlight.Name = "BoulderESP"
+        highlight.FillColor = Color3.fromRGB(0, 255, 128)
+        highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+        highlight.FillTransparency = 0.4
+        highlight.OutlineTransparency = 0
+        highlight.Adornee = boulder
+        highlight.Parent = boulder
+        voltiteHighlightCache[boulder] = highlight
+    end
+    highlight.Enabled = true
+end
+
+task.spawn(function()
+    if bouldersFolder then
+        for _, child in ipairs(bouldersFolder:GetChildren()) do applyBoulderESP(child) end
+        bouldersFolder.ChildAdded:Connect(applyBoulderESP)
+    end
+end)
+
+---------------------------------------------------------
+-- 4. AUTOMATION LOOPS
+---------------------------------------------------------
+
+-- A. Auto Dig & Auto Aim Ke Model Aktif
+local digMultiplier = 2
+RunService.Heartbeat:Connect(function()
+    if isDiggingActive and DigEvent then
+        local character = player.Character
+        local currentTool = character and character:FindFirstChildOfClass("Tool")
+        if not currentTool then return end
+
+        local dynamicItemName = currentTool.Name
+        local targetPos = GetTargetModelPosition(currentTargetModel) or player:GetMouse().Hit.Position
+
+        if targetPos then
+            for i = 1, digMultiplier do
+                DigEvent:FireServer(dynamicItemName, targetPos)
+            end
+        end
+    end
+end)
+
+-- B. Auto Collect Prompt & Cache
+local promptCache = {}
+for _, obj in ipairs(workspace:GetDescendants()) do
+    if obj:IsA("ProximityPrompt") then table.insert(promptCache, obj) end
+end
+workspace.DescendantAdded:Connect(function(obj)
+    if obj:IsA("ProximityPrompt") then table.insert(promptCache, obj) end
+end)
+workspace.DescendantRemoving:Connect(function(obj)
+    if obj:IsA("ProximityPrompt") then
+        local idx = table.find(promptCache, obj)
+        if idx then table.remove(promptCache, idx) end
+    end
+end)
+
+local function TriggerPrompt(prompt)
+    if not isCollectActive or not prompt then return end
+    pcall(function()
+        prompt.HoldDuration = 0
+        if fireproximityprompt then
+            fireproximityprompt(prompt)
+        else
+            prompt:InputHoldBegin()
+            task.wait()
+            prompt:InputHoldEnd()
+        end
+    end)
+end
+
+-- Function untuk mengecek apakah masih ada item/prompt yang tersisa dekat player
+local function HasCollectablesInRange(radius)
+    local char = player.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+
+    for _, prompt in ipairs(promptCache) do
+        if prompt and prompt.Enabled and prompt.Parent then
+            local parent = prompt.Parent
+            local pos = parent:IsA("BasePart") and parent.Position or (parent:IsA("Model") and parent:GetPivot().Position)
+            if pos then
+                local dist = (hrp.Position - pos).Magnitude
+                if dist <= (radius or COLLECT_RADIUS) then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+ProximityPromptService.PromptShown:Connect(function(prompt) 
+    if isCollectActive then
+        pcall(function() prompt.HoldDuration = 0 end) 
+    end
+end)
+
+ProximityPromptService.PromptButtonHoldBegan:Connect(function(prompt)
+    if isCollectActive then
+        TriggerPrompt(prompt)
+    end
+end)
+
+RunService.Heartbeat:Connect(function()
+    if not isCollectActive then return end
+
+    local char = player.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    local shortestDist = math.huge
+    local nearestPrompt = nil
+
+    for _, prompt in ipairs(promptCache) do
+        if prompt.Enabled and prompt.Parent then
+            local parent = prompt.Parent
+            local pos = parent:IsA("BasePart") and parent.Position or (parent:IsA("Model") and parent:GetPivot().Position)
+            if pos then
+                local dist = (hrp.Position - pos).Magnitude
+                if dist <= prompt.MaxActivationDistance and dist < shortestDist then
+                    shortestDist = dist
+                    nearestPrompt = prompt
+                end
+            end
+        end
+    end
+
+    if nearestPrompt then
+        TriggerPrompt(nearestPrompt)
+    end
+end)
+
+---------------------------------------------------------
+-- 5. TWEEN ENGINE & LOCK SYSTEM
+---------------------------------------------------------
+
+local function getBottomCFrame(target)
+    if target:IsA("Model") then
+        local cframe, size = target:GetBoundingBox()
+        return cframe * CFrame.new(0, 3, 0)
+    else
+        return target.CFrame * CFrame.new(0, 3, 0)
+    end
+end
+
+local function applyPositionLock(character)
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+
+    local bv = hrp:FindFirstChild("TempLockVelocity") or Instance.new("BodyVelocity")
+    bv.Name = "TempLockVelocity"
+    bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+    bv.Velocity = Vector3.zero
+    bv.Parent = hrp
+
+    return bv
+end
+
+local function removePositionLock(character)
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        local bv = hrp:FindFirstChild("TempLockVelocity")
+        if bv then bv:Destroy() end
+    end
+end
+
+local activeTween = nil
+local function tweenToTarget(character, targetCFrame, studsPerSecond)
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not hrp or not humanoid then return false end
+
+    local distance = (hrp.Position - targetCFrame.Position).Magnitude
+    local duration = math.max(distance / (studsPerSecond or TWEEN_SPEED), 0.1)
+
+    for _, part in ipairs(character:GetChildren()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = false
+        end
+    end
+
+    humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+    
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    hrp.AssemblyAngularVelocity = Vector3.zero
+
+    local tweenInfo = TweenInfo.new(
+        duration,
+        Enum.EasingStyle.Linear,
+        Enum.EasingDirection.InOut
+    )
+
+    activeTween = TweenService:Create(hrp, tweenInfo, {CFrame = targetCFrame})
+    activeTween:Play()
+
+    local completed = false
+    local conn
+    conn = activeTween.Completed:Connect(function()
+        completed = true
+        if conn then conn:Disconnect() end
+    end)
+
+    while not completed and isSequenceRunning do
+        task.wait(0.05)
+    end
+
+    for _, part in ipairs(character:GetChildren()) do
+        if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+            part.CanCollide = true
+        end
+    end
+    
+    humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+    hrp.AssemblyLinearVelocity = Vector3.zero
+
+    if isSequenceRunning then
+        applyPositionLock(character)
+        return true
+    end
+    return false
+end
+
+local function getToolFromBackpackOrChar(toolName, character)
+    local backpack = player:FindFirstChildOfClass("Backpack")
+    local inBackpack = backpack and backpack:FindFirstChild(toolName)
+    if inBackpack then return inBackpack end
+    return character:FindFirstChild(toolName)
+end
+
+---------------------------------------------------------
+-- 6. UTAMA: LOOPING MULTI-TARGET SEQUENCE
+---------------------------------------------------------
+
+startButton.MouseButton1Click:Connect(function()
+    if isSequenceRunning then return end
+
+    task.spawn(function()
+        isSequenceRunning = true
+
+        while isSequenceRunning do
+            -- A. Cari Target Terdekat yang Masih Ada
+            currentTargetModel = GetNextTarget()
+
+            if not currentTargetModel or not currentTargetModel.Parent then
+                statusLabel.Text = "> ALL TARGETS CLEARED! WAITING..."
+                statusLabel.TextColor3 = Color3.fromRGB(0, 255, 255)
+                task.wait(2)
+                continue
+            end
+
+            local character = player.Character or player.CharacterAdded:Wait()
+            local hrp = character:FindFirstChild("HumanoidRootPart")
+            local humanoid = character:FindFirstChildOfClass("Humanoid")
+
+            if not hrp or not humanoid then break end
+
+            local bombTool = getToolFromBackpackOrChar("Classic Bomb", character)
+            if not bombTool then
+                statusLabel.Text = "> ERR: NO CLASSIC BOMB!"
+                statusLabel.TextColor3 = Color3.fromRGB(255, 0, 0)
+                isSequenceRunning = false
+                break
+            end
+
+            isDiggingActive = false
+            isCollectActive = false
+
+            -- 1. Tweening ke Bawah Model Target Aktif
+            statusLabel.Text = "> GLIDING TO: " .. currentTargetModel.Name
+            statusLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
+
+            local targetCFrame = getBottomCFrame(currentTargetModel)
+            local success = tweenToTarget(character, targetCFrame, TWEEN_SPEED)
+            
+            if not success or not isSequenceRunning then break end
+
+            -- 2. Tahan Posisi (2 Detik)
+            for i = 2, 1, -1 do
+                if not isSequenceRunning then break end
+                statusLabel.Text = string.format("> HOLDING POSITION (%d S)...", i)
+                statusLabel.TextColor3 = Color3.fromRGB(0, 191, 255)
+                task.wait(1)
+            end
+            if not isSequenceRunning then break end
+
+            -- 3. Equip & Aktifkan Bom
+            statusLabel.Text = "> DROPPING BOMB..."
+            statusLabel.TextColor3 = Color3.fromRGB(255, 165, 0)
+
+            if bombTool.Parent ~= character then
+                humanoid:EquipTool(bombTool)
+                task.wait(0.3)
+            end
+            
+            bombTool:Activate()
+            task.wait(0.5)
+
+            -- 4. Tunggu Ledakan Bom
+            for i = math.ceil(BOMB_EXPLODE_DELAY), 1, -1 do
+                if not isSequenceRunning then break end
+                statusLabel.Text = string.format("> WAITING EXPLOSION (%d S)...", i)
+                statusLabel.TextColor3 = Color3.fromRGB(255, 69, 0)
+                task.wait(1)
+            end
+            if not isSequenceRunning then break end
+
+            removePositionLock(character)
+
+            -- 5. Equip Pickaxe
+            statusLabel.Text = "> EQUIPPING PICKAXE..."
+            statusLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+
+            local pickaxeTool = nil
+            local backpack = player:FindFirstChildOfClass("Backpack")
+            local playerData = player:FindFirstChild("PlayerData")
+            local invPickaxes = playerData and playerData:FindFirstChild("Inventory") and playerData.Inventory:FindFirstChild("Pickaxes")
+
+            local targetPickaxeName = nil
+            if invPickaxes then
+                local equippedValue = invPickaxes:FindFirstChild("Equipped") or invPickaxes:FindFirstChildOfClass("StringValue")
+                if equippedValue and equippedValue:IsA("ValueBase") then
+                    targetPickaxeName = tostring(equippedValue.Value)
+                else
+                    local firstPick = invPickaxes:GetChildren()[1]
+                    if firstPick then targetPickaxeName = firstPick.Name end
+                end
+            end
+
+            if backpack then
+                if targetPickaxeName then
+                    pickaxeTool = backpack:FindFirstChild(targetPickaxeName) or character:FindFirstChild(targetPickaxeName)
+                end
+                
+                if not pickaxeTool then
+                    for _, item in ipairs(backpack:GetChildren()) do
+                        if item:IsA("Tool") and string.find(item.Name:lower(), "pickaxe") then
+                            pickaxeTool = item
+                            break
+                        end
+                    end
+                end
+            end
+
+            if pickaxeTool and pickaxeTool:IsA("Tool") then
+                humanoid:EquipTool(pickaxeTool)
+                task.wait(0.3)
+            else
+                local invTool = invPickaxes and invPickaxes:FindFirstChildOfClass("Tool")
+                if invTool then
+                    humanoid:EquipTool(invTool)
+                    task.wait(0.3)
+                end
+            end
+
+            -- 6. Aktifkan Auto Dig & Mining Target
+            isDiggingActive = true
+            statusLabel.Text = "> MINING: " .. currentTargetModel.Name
+            statusLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
+
+            -- Tunggu hingga target hancur/hilang dari Workspace
+            while currentTargetModel and currentTargetModel.Parent and isSequenceRunning do
+                task.wait(0.2)
+            end
+
+            -- 7. SETELAH TARGET HANCUR -> AUTO COLLECT SAMPAI BERSIH TOTAL
+            isDiggingActive = false
+            if isSequenceRunning then
+                isCollectActive = true
+                statusLabel.Text = "> DESTROYED! COLLECTING ALL DROPS..."
+                statusLabel.TextColor3 = Color3.fromRGB(0, 255, 0)
+                
+                -- Tunggu sebentar agar item drop sempat spawn
+                task.wait(0.5)
+
+                local collectStartTime = tick()
+                local noItemsTimer = 0
+
+                while isSequenceRunning do
+                    -- Cek apakah masih ada item di sekitar player
+                    if HasCollectablesInRange(COLLECT_RADIUS) then
+                        noItemsTimer = 0 -- Reset timer jika masih ada item yang terdeteksi
+                    else
+                        noItemsTimer = noItemsTimer + 0.2
+                        -- Jika tidak ada item selama 1.2 detik berturut-turut, anggap sudah bersih total
+                        if noItemsTimer >= 1.2 then
+                            break
+                        end
+                    end
+
+                    -- Timeout pengaman agar tidak stuck jika ada item bugged yang tidak bisa diambil
+                    if (tick() - collectStartTime) >= MAX_COLLECT_TIMEOUT then
+                        break
+                    end
+
+                    task.wait(0.2)
+                end
+
+                isCollectActive = false
+            end
+        end
+
+        if player.Character then removePositionLock(player.Character) end
+    end)
+end)
+
+stopButton.MouseButton1Click:Connect(function()
+    isSequenceRunning = false
+    isDiggingActive = false
+    isCollectActive = false
+    currentTargetModel = nil
+
+    if activeTween then
+        activeTween:Cancel()
+    end
+
+    if player.Character then
+        removePositionLock(player.Character)
+        local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+        end
+    end
+
+    statusLabel.Text = "> STOPPED ALL SYSTEMS!"
+    statusLabel.TextColor3 = Color3.fromRGB(255, 0, 0)
+end)
