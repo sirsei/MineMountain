@@ -4,17 +4,30 @@ local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ProximityPromptService = game:GetService("ProximityPromptService")
 local TweenService = game:GetService("TweenService")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
 ---------------------------------------------------------
+-- AUTO EXECUTE / QUEUE ON TELEPORT
+---------------------------------------------------------
+local queueOnTeleport = (syn and syn.queue_on_teleport) or queue_on_teleport or (fluxus and fluxus.queue_on_teleport)
+if queueOnTeleport then
+    queueOnTeleport([[
+        repeat task.wait() until game:IsLoaded()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/..."))()
+    ]])
+end
+
+---------------------------------------------------------
 -- KONFIGURASI TWEEN & OTOMASI
 ---------------------------------------------------------
-local TWEEN_SPEED = 100 -- Kecepatan Tween (Studs per detik).
-local BOMB_EXPLODE_DELAY = 3.2 -- Durasi tunggu hingga bom meledak (detik)
-local COLLECT_RADIUS = 25 -- Jarak radius deteksi item drop di sekitar player (studs)
-local MAX_COLLECT_TIMEOUT = 12 -- Batas waktu maksimal tunggu collect (detik) agar tidak stuck
+local TWEEN_SPEED = 100
+local BOMB_EXPLODE_DELAY = 3.2
+local COLLECT_RADIUS = 25
+local MAX_COLLECT_TIMEOUT = 12
 
 -- Folder Target di Workspace
 local targetPath = workspace:WaitForChild("MountainDecorations", 10)
@@ -24,11 +37,47 @@ local bouldersFolder = targetPath and targetPath:WaitForChild("Boulders", 10)
 local Remotes = ReplicatedStorage:WaitForChild("Remotes", 2)
 local DigEvent = Remotes and Remotes:WaitForChild("DigRequest", 2) or nil
 
--- Switch Status Kontrol
+-- Switch Status Kontrol & Selection
 local isDiggingActive = false
 local isCollectActive = false
 local isSequenceRunning = false
-local currentTargetModel = nil -- Menyimpan target aktif saat ini
+local currentTargetModel = nil
+
+local selectedMiningTarget = "All"
+local selectedESPTarget = "All"
+
+---------------------------------------------------------
+-- DYNAMIC NAME SCANNED FROM WORKSPACE
+---------------------------------------------------------
+local function GetBoulderNames()
+    local names = {}
+    local hash = {}
+
+    if bouldersFolder then
+        for _, child in ipairs(bouldersFolder:GetChildren()) do
+            if child and not hash[child.Name] then
+                hash[child.Name] = true
+                table.insert(names, child.Name)
+            end
+        end
+    end
+    table.sort(names)
+    return names
+end
+
+local scannedNames = GetBoulderNames()
+
+-- Pilihan Target Mining ("All" + Hasil Scan Workspace)
+local modelOptions = {"All"}
+for _, name in ipairs(scannedNames) do
+    table.insert(modelOptions, name)
+end
+
+-- Pilihan ESP ("OFF", "All" + Hasil Scan Workspace)
+local espOptions = {"OFF", "All"}
+for _, name in ipairs(scannedNames) do
+    table.insert(espOptions, name)
+end
 
 ---------------------------------------------------------
 -- 1. UTILITY: DYNAMIC TARGET FINDER
@@ -44,6 +93,11 @@ local function GetNextTarget()
 
     for _, child in ipairs(bouldersFolder:GetChildren()) do
         if child and child.Parent then
+            -- Filter berdasarkan Dropdown Auto Mining
+            if selectedMiningTarget ~= "All" and child.Name ~= selectedMiningTarget then
+                continue
+            end
+
             local pos = nil
             if child:IsA("Model") then
                 pos = child.PrimaryPart and child.PrimaryPart.Position or child:GetPivot().Position
@@ -86,8 +140,8 @@ screenGui.Parent = playerGui
 
 local mainFrame = Instance.new("Frame")
 mainFrame.Name = "MainFrame"
-mainFrame.Size = UDim2.new(0, 320, 0, 200)
-mainFrame.Position = UDim2.new(0.5, -160, 0.35, -100)
+mainFrame.Size = UDim2.new(0, 320, 0, 320)
+mainFrame.Position = UDim2.new(0.5, -160, 0.35, -160)
 mainFrame.BackgroundColor3 = Color3.fromRGB(192, 192, 192)
 mainFrame.BorderSizePixel = 2
 mainFrame.BorderColor3 = Color3.fromRGB(255, 255, 255)
@@ -140,11 +194,86 @@ statusLabel.BorderSizePixel = 2
 statusLabel.BorderColor3 = Color3.fromRGB(128, 128, 128)
 statusLabel.Parent = mainFrame
 
+-- Helper Function: Custom Dropdown Windows 95
+local function CreateDropdown(parent, yPos, labelText, options, defaultText, callback)
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(0, 100, 0, 20)
+    label.Position = UDim2.new(0, 10, 0, yPos)
+    label.BackgroundTransparency = 1
+    label.Text = labelText
+    label.TextColor3 = Color3.fromRGB(0, 0, 0)
+    label.Font = Enum.Font.Code
+    label.TextSize = 11
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = parent
+
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 190, 0, 22)
+    btn.Position = UDim2.new(0, 120, 0, yPos)
+    btn.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    btn.Text = "  " .. defaultText .. "  v"
+    btn.TextColor3 = Color3.fromRGB(0, 0, 0)
+    btn.Font = Enum.Font.Code
+    btn.TextSize = 11
+    btn.BorderSizePixel = 1
+    btn.TextXAlignment = Enum.TextXAlignment.Left
+    btn.Parent = parent
+
+    local container = Instance.new("ScrollingFrame")
+    container.Size = UDim2.new(0, 190, 0, math.min(#options * 22, 110))
+    container.Position = UDim2.new(0, 120, 0, yPos + 24)
+    container.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    container.BorderSizePixel = 1
+    container.Visible = false
+    container.ZIndex = 10
+    container.CanvasSize = UDim2.new(0, 0, 0, #options * 22)
+    container.ScrollBarThickness = 4
+    container.Parent = parent
+
+    local layout = Instance.new("UIListLayout")
+    layout.Parent = container
+
+    for _, opt in ipairs(options) do
+        local optBtn = Instance.new("TextButton")
+        optBtn.Size = UDim2.new(1, 0, 0, 22)
+        optBtn.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        optBtn.Text = "  " .. opt
+        optBtn.TextColor3 = Color3.fromRGB(0, 0, 0)
+        optBtn.Font = Enum.Font.Code
+        optBtn.TextSize = 11
+        optBtn.BorderSizePixel = 0
+        optBtn.TextXAlignment = Enum.TextXAlignment.Left
+        optBtn.ZIndex = 11
+        optBtn.Parent = container
+
+        optBtn.MouseButton1Click:Connect(function()
+            btn.Text = "  " .. opt .. "  v"
+            container.Visible = false
+            callback(opt)
+        end)
+    end
+
+    btn.MouseButton1Click:Connect(function()
+        container.Visible = not container.Visible
+    end)
+end
+
+-- Dropdown Auto Mining
+CreateDropdown(mainFrame, 75, "TARGET MINING:", modelOptions, "All", function(selected)
+    selectedMiningTarget = selected
+end)
+
+-- Dropdown ESP Model
+CreateDropdown(mainFrame, 105, "ESP MODEL:", espOptions, "All", function(selected)
+    selectedESPTarget = selected
+    if updateAllESP then updateAllESP() end
+end)
+
 local startButton = Instance.new("TextButton")
-startButton.Size = UDim2.new(0, 140, 0, 35)
-startButton.Position = UDim2.new(0, 10, 0, 80)
+startButton.Size = UDim2.new(0, 140, 0, 30)
+startButton.Position = UDim2.new(0, 10, 0, 140)
 startButton.BackgroundColor3 = Color3.fromRGB(192, 192, 192)
-startButton.Text = "[ START SEQUENCE ]"
+startButton.Text = "[ START BANG ]"
 startButton.TextColor3 = Color3.fromRGB(0, 0, 0)
 startButton.Font = Enum.Font.Code
 startButton.TextSize = 11
@@ -152,8 +281,8 @@ startButton.BorderSizePixel = 2
 startButton.Parent = mainFrame
 
 local stopButton = Instance.new("TextButton")
-stopButton.Size = UDim2.new(0, 140, 0, 35)
-stopButton.Position = UDim2.new(1, -150, 0, 80)
+stopButton.Size = UDim2.new(0, 140, 0, 30)
+stopButton.Position = UDim2.new(1, -150, 0, 140)
 stopButton.BackgroundColor3 = Color3.fromRGB(192, 192, 192)
 stopButton.Text = "[ STOP BANG ]"
 stopButton.TextColor3 = Color3.fromRGB(0, 0, 0)
@@ -162,9 +291,20 @@ stopButton.TextSize = 11
 stopButton.BorderSizePixel = 2
 stopButton.Parent = mainFrame
 
+local hopButton = Instance.new("TextButton")
+hopButton.Size = UDim2.new(1, -20, 0, 30)
+hopButton.Position = UDim2.new(0, 10, 0, 180)
+hopButton.BackgroundColor3 = Color3.fromRGB(192, 192, 192)
+hopButton.Text = "[ SERVER HOP ]"
+hopButton.TextColor3 = Color3.fromRGB(0, 0, 128)
+hopButton.Font = Enum.Font.Code
+hopButton.TextSize = 11
+hopButton.BorderSizePixel = 2
+hopButton.Parent = mainFrame
+
 local footerLabel = Instance.new("TextLabel")
-footerLabel.Size = UDim2.new(1, -20, 0, 40)
-footerLabel.Position = UDim2.new(0, 10, 0, 130)
+footerLabel.Size = UDim2.new(1, -20, 0, 30)
+footerLabel.Position = UDim2.new(0, 10, 0, 280)
 footerLabel.BackgroundTransparency = 1
 footerLabel.Text = "SIKII AAAAAA"
 footerLabel.TextColor3 = Color3.fromRGB(0, 0, 128)
@@ -174,21 +314,12 @@ footerLabel.TextWrapped = true
 footerLabel.Parent = mainFrame
 
 ---------------------------------------------------------
--- 3. HIGHLIGHT & UTILITIES
+-- 3. HIGHLIGHT & UTILITIES ESP
 ---------------------------------------------------------
 local voltiteHighlightCache = {}
 
 local function applyBoulderESP(boulder)
     if not boulder:IsA("Model") and not boulder:IsA("BasePart") then return end
-
-    for _, child in ipairs(boulder:GetDescendants()) do
-        if child:IsA("BasePart") then
-            child.Transparency = 0
-            child:GetPropertyChangedSignal("Transparency"):Connect(function()
-                if child.Transparency > 0 then child.Transparency = 0 end
-            end)
-        end
-    end
 
     local highlight = voltiteHighlightCache[boulder] or boulder:FindFirstChild("BoulderESP")
     if not highlight then
@@ -202,15 +333,69 @@ local function applyBoulderESP(boulder)
         highlight.Parent = boulder
         voltiteHighlightCache[boulder] = highlight
     end
-    highlight.Enabled = true
+
+    -- Dynamic Match berdasarkan nama persis
+    if selectedESPTarget == "OFF" then
+        highlight.Enabled = false
+    elseif selectedESPTarget == "All" then
+        highlight.Enabled = true
+    else
+        highlight.Enabled = (boulder.Name == selectedESPTarget)
+    end
+end
+
+function updateAllESP()
+    if bouldersFolder then
+        for _, child in ipairs(bouldersFolder:GetChildren()) do
+            applyBoulderESP(child)
+        end
+    end
 end
 
 task.spawn(function()
     if bouldersFolder then
-        for _, child in ipairs(bouldersFolder:GetChildren()) do applyBoulderESP(child) end
+        updateAllESP()
         bouldersFolder.ChildAdded:Connect(applyBoulderESP)
     end
 end)
+
+---------------------------------------------------------
+-- SERVER HOP FITUR
+---------------------------------------------------------
+local function ServerHop()
+    statusLabel.Text = "> SEARCHING NEW SERVER..."
+    statusLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
+    
+    local placeId = game.PlaceId
+    local servers = {}
+    local req = request or http_request or (syn and syn.request)
+    
+    if req then
+        local url = string.format("https://games.roblox.com/v1/games/%s/servers/0?sortOrder=Asc&limit=100", tostring(placeId))
+        local response = req({Url = url, Method = "GET"})
+        if response and response.Body then
+            local data = HttpService:JSONDecode(response.Body)
+            if data and data.data then
+                for _, s in ipairs(data.data) do
+                    if type(s) == "table" and s.playing < s.maxPlayers and s.id ~= game.JobId then
+                        table.insert(servers, s.id)
+                    end
+                end
+            end
+        end
+    end
+
+    if #servers > 0 then
+        local randomServer = servers[math.random(1, #servers)]
+        statusLabel.Text = "> TELEPORTING..."
+        TeleportService:TeleportToPlaceInstance(placeId, randomServer, player)
+    else
+        statusLabel.Text = "> HOPPING TO RANDOM..."
+        TeleportService:Teleport(placeId, player)
+    end
+end
+
+hopButton.MouseButton1Click:Connect(ServerHop)
 
 ---------------------------------------------------------
 -- 4. AUTOMATION LOOPS
@@ -264,7 +449,6 @@ local function TriggerPrompt(prompt)
     end)
 end
 
--- Function untuk mengecek apakah masih ada item/prompt yang tersisa dekat player
 local function HasCollectablesInRange(radius)
     local char = player.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -434,7 +618,6 @@ startButton.MouseButton1Click:Connect(function()
         isSequenceRunning = true
 
         while isSequenceRunning do
-            -- A. Cari Target Terdekat yang Masih Ada
             currentTargetModel = GetNextTarget()
 
             if not currentTargetModel or not currentTargetModel.Parent then
@@ -461,7 +644,6 @@ startButton.MouseButton1Click:Connect(function()
             isDiggingActive = false
             isCollectActive = false
 
-            -- 1. Tweening ke Bawah Model Target Aktif
             statusLabel.Text = "> GLIDING TO: " .. currentTargetModel.Name
             statusLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
 
@@ -470,7 +652,6 @@ startButton.MouseButton1Click:Connect(function()
             
             if not success or not isSequenceRunning then break end
 
-            -- 2. Tahan Posisi (2 Detik)
             for i = 2, 1, -1 do
                 if not isSequenceRunning then break end
                 statusLabel.Text = string.format("> HOLDING POSITION (%d S)...", i)
@@ -479,7 +660,6 @@ startButton.MouseButton1Click:Connect(function()
             end
             if not isSequenceRunning then break end
 
-            -- 3. Equip & Aktifkan Bom
             statusLabel.Text = "> DROPPING BOMB..."
             statusLabel.TextColor3 = Color3.fromRGB(255, 165, 0)
 
@@ -491,7 +671,6 @@ startButton.MouseButton1Click:Connect(function()
             bombTool:Activate()
             task.wait(0.5)
 
-            -- 4. Tunggu Ledakan Bom
             for i = math.ceil(BOMB_EXPLODE_DELAY), 1, -1 do
                 if not isSequenceRunning then break end
                 statusLabel.Text = string.format("> WAITING EXPLOSION (%d S)...", i)
@@ -502,7 +681,6 @@ startButton.MouseButton1Click:Connect(function()
 
             removePositionLock(character)
 
-            -- 5. Equip Pickaxe
             statusLabel.Text = "> EQUIPPING PICKAXE..."
             statusLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 
@@ -548,42 +726,35 @@ startButton.MouseButton1Click:Connect(function()
                 end
             end
 
-            -- 6. Aktifkan Auto Dig & Mining Target
             isDiggingActive = true
             statusLabel.Text = "> MINING: " .. currentTargetModel.Name
             statusLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
 
-            -- Tunggu hingga target hancur/hilang dari Workspace
             while currentTargetModel and currentTargetModel.Parent and isSequenceRunning do
                 task.wait(0.2)
             end
 
-            -- 7. SETELAH TARGET HANCUR -> AUTO COLLECT SAMPAI BERSIH TOTAL
             isDiggingActive = false
             if isSequenceRunning then
                 isCollectActive = true
                 statusLabel.Text = "> DESTROYED! COLLECTING ALL DROPS..."
                 statusLabel.TextColor3 = Color3.fromRGB(0, 255, 0)
                 
-                -- Tunggu sebentar agar item drop sempat spawn
                 task.wait(0.5)
 
                 local collectStartTime = tick()
                 local noItemsTimer = 0
 
                 while isSequenceRunning do
-                    -- Cek apakah masih ada item di sekitar player
                     if HasCollectablesInRange(COLLECT_RADIUS) then
-                        noItemsTimer = 0 -- Reset timer jika masih ada item yang terdeteksi
+                        noItemsTimer = 0
                     else
                         noItemsTimer = noItemsTimer + 0.2
-                        -- Jika tidak ada item selama 1.2 detik berturut-turut, anggap sudah bersih total
                         if noItemsTimer >= 1.2 then
                             break
                         end
                     end
 
-                    -- Timeout pengaman agar tidak stuck jika ada item bugged yang tidak bisa diambil
                     if (tick() - collectStartTime) >= MAX_COLLECT_TIMEOUT then
                         break
                     end
