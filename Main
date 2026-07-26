@@ -26,7 +26,7 @@ end
 ---------------------------------------------------------
 local TWEEN_SPEED = 100
 local BOMB_EXPLODE_DELAY = 3.2
-local COLLECT_RADIUS = 25
+local COLLECT_RADIUS = 100
 local MAX_COLLECT_TIMEOUT = 12
 
 -- Folder Target di Workspace
