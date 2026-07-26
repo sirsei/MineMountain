@@ -314,19 +314,40 @@ footerLabel.TextWrapped = true
 footerLabel.Parent = mainFrame
 
 ---------------------------------------------------------
--- 3. HIGHLIGHT & UTILITIES ESP
+-- 3. HIGHLIGHT & UTILITIES ESP (FORCE TRANSPARENCY LOCK INTEGRATED)
 ---------------------------------------------------------
 local voltiteHighlightCache = {}
 
 local function applyBoulderESP(boulder)
-    if not boulder:IsA("Model") and not boulder:IsA("BasePart") then return end
+    if not (boulder:IsA("Model") or boulder:IsA("BasePart")) then return end
 
+    -- 1. Force Transparency Lock: Memastikan transparansi selalu 0 (Anti-Hide/Transparan)
+    for _, child in ipairs(boulder:GetDescendants()) do
+        if child:IsA("BasePart") then
+            child.Transparency = 0
+            
+            -- Lock real-time jika script game mengubah transparansi
+            if not child:FindFirstChild("TransparencyLock") then
+                local tag = Instance.new("BoolValue")
+                tag.Name = "TransparencyLock"
+                tag.Parent = child
+
+                child:GetPropertyChangedSignal("Transparency"):Connect(function()
+                    if child.Transparency > 0 then
+                        child.Transparency = 0
+                    end
+                end)
+            end
+        end
+    end
+
+    -- 2. Highlights Engine
     local highlight = voltiteHighlightCache[boulder] or boulder:FindFirstChild("BoulderESP")
     if not highlight then
         highlight = Instance.new("Highlight")
         highlight.Name = "BoulderESP"
-        highlight.FillColor = Color3.fromRGB(0, 255, 128)
-        highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+        highlight.FillColor = Color3.fromRGB(0, 255, 128)      -- Hijau Neon
+        highlight.OutlineColor = Color3.fromRGB(255, 255, 255)  -- Outline Putih
         highlight.FillTransparency = 0.4
         highlight.OutlineTransparency = 0
         highlight.Adornee = boulder
@@ -334,7 +355,7 @@ local function applyBoulderESP(boulder)
         voltiteHighlightCache[boulder] = highlight
     end
 
-    -- Dynamic Match berdasarkan nama persis
+    -- Dynamic Match berdasarkan pilihan Dropdown ESP
     if selectedESPTarget == "OFF" then
         highlight.Enabled = false
     elseif selectedESPTarget == "All" then
