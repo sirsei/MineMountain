@@ -17,7 +17,7 @@ local queueOnTeleport = (syn and syn.queue_on_teleport) or queue_on_teleport or 
 if queueOnTeleport then
     queueOnTeleport([[
         repeat task.wait() until game:IsLoaded()
-        loadstring(game:HttpGet("https://raw.githubusercontent.com/..."))()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/sirsei/MineMountain/refs/heads/main/Main"))()"))()
     ]])
 end
 
@@ -25,9 +25,9 @@ end
 -- KONFIGURASI TWEEN & OTOMASI
 ---------------------------------------------------------
 local TWEEN_SPEED = 100
-local BOMB_EXPLODE_DELAY = 3.2
+local BOMB_EXPLODE_DELAY = 2
 local COLLECT_RADIUS = 100
-local MAX_COLLECT_TIMEOUT = 12
+local MAX_COLLECT_TIMEOUT = 15
 
 -- Folder Target di Workspace
 local targetPath = workspace:WaitForChild("MountainDecorations", 10)
@@ -43,44 +43,48 @@ local isCollectActive = false
 local isSequenceRunning = false
 local currentTargetModel = nil
 
-local selectedMiningTarget = "All"
+-- Filter Selection State (Tabel boolean untuk Checkbox Multi-Select)
+local selectedMiningTargets = {} -- Contoh: {["Big Boulder"] = true, ["Small Ore"] = false}
 local selectedESPTarget = "All"
 
 ---------------------------------------------------------
--- DYNAMIC NAME SCANNED FROM WORKSPACE
+-- DYNAMIC STREAMING & NAME SCANNER
 ---------------------------------------------------------
-local function GetBoulderNames()
-    local names = {}
-    local hash = {}
+local knownBoulderNames = {}
 
+local function RefreshScannedNames()
+    local updated = false
     if bouldersFolder then
         for _, child in ipairs(bouldersFolder:GetChildren()) do
-            if child and not hash[child.Name] then
-                hash[child.Name] = true
-                table.insert(names, child.Name)
+            if child and not table.find(knownBoulderNames, child.Name) then
+                table.insert(knownBoulderNames, child.Name)
+                if selectedMiningTargets[child.Name] == nil then
+                    selectedMiningTargets[child.Name] = true -- Default dikarenakan/dicentang
+                end
+                updated = true
             end
         end
     end
-    table.sort(names)
-    return names
+    if updated then
+        table.sort(knownBoulderNames)
+    end
+    return updated
 end
 
-local scannedNames = GetBoulderNames()
+RefreshScannedNames()
 
--- Pilihan Target Mining ("All" + Hasil Scan Workspace)
-local modelOptions = {"All"}
-for _, name in ipairs(scannedNames) do
-    table.insert(modelOptions, name)
-end
-
--- Pilihan ESP ("OFF", "All" + Hasil Scan Workspace)
-local espOptions = {"OFF", "All"}
-for _, name in ipairs(scannedNames) do
-    table.insert(espOptions, name)
+-- Listener saat model baru ter-stream masuk ke client
+if bouldersFolder then
+    bouldersFolder.ChildAdded:Connect(function(child)
+        task.wait(0.1)
+        if RefreshScannedNames() and rebuildMiningDropdown then
+            rebuildMiningDropdown()
+        end
+    end)
 end
 
 ---------------------------------------------------------
--- 1. UTILITY: DYNAMIC TARGET FINDER
+-- 1. UTILITY: DYNAMIC TARGET FINDER WITH STREAMING REQUEST
 ---------------------------------------------------------
 local function GetNextTarget()
     if not bouldersFolder then return nil end
@@ -93,8 +97,8 @@ local function GetNextTarget()
 
     for _, child in ipairs(bouldersFolder:GetChildren()) do
         if child and child.Parent then
-            -- Filter berdasarkan Dropdown Auto Mining
-            if selectedMiningTarget ~= "All" and child.Name ~= selectedMiningTarget then
+            -- Filter berdasarkan Checkbox Multi-Select
+            if not selectedMiningTargets[child.Name] then
                 continue
             end
 
@@ -119,6 +123,14 @@ local function GetNextTarget()
         end
     end
 
+    -- Paksa stream area target jika terdeteksi tapi belum sepenuhnya loaded
+    if closestTarget then
+        local targetPos = closestTarget:IsA("Model") and closestTarget:GetPivot().Position or closestTarget.Position
+        pcall(function()
+            player:RequestStreamAroundAsync(targetPos)
+        end)
+    end
+
     return closestTarget
 end
 
@@ -140,8 +152,8 @@ screenGui.Parent = playerGui
 
 local mainFrame = Instance.new("Frame")
 mainFrame.Name = "MainFrame"
-mainFrame.Size = UDim2.new(0, 320, 0, 320)
-mainFrame.Position = UDim2.new(0.5, -160, 0.35, -160)
+mainFrame.Size = UDim2.new(0, 320, 0, 360)
+mainFrame.Position = UDim2.new(0.5, -160, 0.35, -180)
 mainFrame.BackgroundColor3 = Color3.fromRGB(192, 192, 192)
 mainFrame.BorderSizePixel = 2
 mainFrame.BorderColor3 = Color3.fromRGB(255, 255, 255)
@@ -189,13 +201,141 @@ statusLabel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
 statusLabel.TextColor3 = Color3.fromRGB(0, 255, 0)
 statusLabel.Font = Enum.Font.Code
 statusLabel.TextSize = 12
-statusLabel.Text = "> SYS_INIT: GAS BANG"
+statusLabel.Text = "> SYS_INIT: READY BANG"
 statusLabel.BorderSizePixel = 2
 statusLabel.BorderColor3 = Color3.fromRGB(128, 128, 128)
 statusLabel.Parent = mainFrame
 
--- Helper Function: Custom Dropdown Windows 95
-local function CreateDropdown(parent, yPos, labelText, options, defaultText, callback)
+---------------------------------------------------------
+-- DROPDOWN UPGRADE: MULTI-SELECT CHECKBOX DROPDOWN
+---------------------------------------------------------
+local miningDropdownContainer = nil
+
+local function CreateMultiSelectDropdown(parent, yPos, labelText)
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(0, 100, 0, 20)
+    label.Position = UDim2.new(0, 10, 0, yPos)
+    label.BackgroundTransparency = 1
+    label.Text = labelText
+    label.TextColor3 = Color3.fromRGB(0, 0, 0)
+    label.Font = Enum.Font.Code
+    label.TextSize = 11
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = parent
+
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 190, 0, 22)
+    btn.Position = UDim2.new(0, 120, 0, yPos)
+    btn.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    btn.Text = "  [ Select Models ]  v"
+    btn.TextColor3 = Color3.fromRGB(0, 0, 0)
+    btn.Font = Enum.Font.Code
+    btn.TextSize = 11
+    btn.BorderSizePixel = 1
+    btn.TextXAlignment = Enum.TextXAlignment.Left
+    btn.Parent = parent
+
+    local container = Instance.new("ScrollingFrame")
+    container.Size = UDim2.new(0, 190, 0, 140)
+    container.Position = UDim2.new(0, 120, 0, yPos + 24)
+    container.BackgroundColor3 = Color3.fromRGB(240, 240, 240)
+    container.BorderSizePixel = 1
+    container.Visible = false
+    container.ZIndex = 20
+    container.ScrollBarThickness = 5
+    container.Parent = parent
+    
+    miningDropdownContainer = container
+
+    local layout = Instance.new("UIListLayout")
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Parent = container
+
+    btn.MouseButton1Click:Connect(function()
+        container.Visible = not container.Visible
+    end)
+
+    return container
+end
+
+function rebuildMiningDropdown()
+    if not miningDropdownContainer then return end
+
+    for _, child in ipairs(miningDropdownContainer:GetChildren()) do
+        if child:IsA("GuiObject") then child:Destroy() end
+    end
+
+    -- 1. Control Bar: Select All / Deselect All
+    local ctrlFrame = Instance.new("Frame")
+    ctrlFrame.Size = UDim2.new(1, 0, 0, 22)
+    ctrlFrame.BackgroundColor3 = Color3.fromRGB(200, 200, 200)
+    ctrlFrame.BorderSizePixel = 0
+    ctrlFrame.ZIndex = 21
+    ctrlFrame.Parent = miningDropdownContainer
+
+    local allBtn = Instance.new("TextButton")
+    allBtn.Size = UDim2.new(0.5, -2, 1, -2)
+    allBtn.Position = UDim2.new(0, 1, 0, 1)
+    allBtn.Text = "[ALL]"
+    allBtn.Font = Enum.Font.Code
+    allBtn.TextSize = 10
+    allBtn.ZIndex = 22
+    allBtn.Parent = ctrlFrame
+
+    local noneBtn = Instance.new("TextButton")
+    noneBtn.Size = UDim2.new(0.5, -2, 1, -2)
+    noneBtn.Position = UDim2.new(0.5, 1, 0, 1)
+    noneBtn.Text = "[NONE]"
+    noneBtn.Font = Enum.Font.Code
+    noneBtn.TextSize = 10
+    noneBtn.ZIndex = 22
+    noneBtn.Parent = ctrlFrame
+
+    allBtn.MouseButton1Click:Connect(function()
+        for name, _ in pairs(selectedMiningTargets) do
+            selectedMiningTargets[name] = true
+        end
+        rebuildMiningDropdown()
+    end)
+
+    noneBtn.MouseButton1Click:Connect(function()
+        for name, _ in pairs(selectedMiningTargets) do
+            selectedMiningTargets[name] = false
+        end
+        rebuildMiningDropdown()
+    end)
+
+    -- 2. Model Checkbox List
+    for _, name in ipairs(knownBoulderNames) do
+        local isChecked = selectedMiningTargets[name] or false
+
+        local itemBtn = Instance.new("TextButton")
+        itemBtn.Size = UDim2.new(1, 0, 0, 22)
+        itemBtn.BackgroundColor3 = isChecked and Color3.fromRGB(220, 255, 220) or Color3.fromRGB(255, 255, 255)
+        itemBtn.Text = string.format(" [%s] %s", isChecked and "X" or " ", name)
+        itemBtn.TextColor3 = Color3.fromRGB(0, 0, 0)
+        itemBtn.Font = Enum.Font.Code
+        itemBtn.TextSize = 11
+        itemBtn.BorderSizePixel = 0
+        itemBtn.TextXAlignment = Enum.TextXAlignment.Left
+        itemBtn.ZIndex = 21
+        itemBtn.Parent = miningDropdownContainer
+
+        itemBtn.MouseButton1Click:Connect(function()
+            selectedMiningTargets[name] = not selectedMiningTargets[name]
+            rebuildMiningDropdown()
+        end)
+    end
+
+    miningDropdownContainer.CanvasSize = UDim2.new(0, 0, 0, (#knownBoulderNames + 1) * 22)
+end
+
+-- Init Multi-Select Dropdown
+CreateMultiSelectDropdown(mainFrame, 75, "TARGET MINING:")
+rebuildMiningDropdown()
+
+-- Helper Standard Dropdown untuk ESP
+local function CreateStandardDropdown(parent, yPos, labelText, getOptionsCallback, defaultText, callback)
     local label = Instance.new("TextLabel")
     label.Size = UDim2.new(0, 100, 0, 20)
     label.Position = UDim2.new(0, 10, 0, yPos)
@@ -220,58 +360,66 @@ local function CreateDropdown(parent, yPos, labelText, options, defaultText, cal
     btn.Parent = parent
 
     local container = Instance.new("ScrollingFrame")
-    container.Size = UDim2.new(0, 190, 0, math.min(#options * 22, 110))
     container.Position = UDim2.new(0, 120, 0, yPos + 24)
     container.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
     container.BorderSizePixel = 1
     container.Visible = false
-    container.ZIndex = 10
-    container.CanvasSize = UDim2.new(0, 0, 0, #options * 22)
+    container.ZIndex = 15
     container.ScrollBarThickness = 4
     container.Parent = parent
 
     local layout = Instance.new("UIListLayout")
     layout.Parent = container
 
-    for _, opt in ipairs(options) do
-        local optBtn = Instance.new("TextButton")
-        optBtn.Size = UDim2.new(1, 0, 0, 22)
-        optBtn.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-        optBtn.Text = "  " .. opt
-        optBtn.TextColor3 = Color3.fromRGB(0, 0, 0)
-        optBtn.Font = Enum.Font.Code
-        optBtn.TextSize = 11
-        optBtn.BorderSizePixel = 0
-        optBtn.TextXAlignment = Enum.TextXAlignment.Left
-        optBtn.ZIndex = 11
-        optBtn.Parent = container
-
-        optBtn.MouseButton1Click:Connect(function()
-            btn.Text = "  " .. opt .. "  v"
-            container.Visible = false
-            callback(opt)
-        end)
-    end
-
     btn.MouseButton1Click:Connect(function()
+        if not container.Visible then
+            for _, c in ipairs(container:GetChildren()) do
+                if c:IsA("TextButton") then c:Destroy() end
+            end
+            
+            local opts = getOptionsCallback()
+            container.Size = UDim2.new(0, 190, 0, math.min(#opts * 22, 110))
+            container.CanvasSize = UDim2.new(0, 0, 0, #opts * 22)
+
+            for _, opt in ipairs(opts) do
+                local optBtn = Instance.new("TextButton")
+                optBtn.Size = UDim2.new(1, 0, 0, 22)
+                optBtn.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+                optBtn.Text = "  " .. opt
+                optBtn.TextColor3 = Color3.fromRGB(0, 0, 0)
+                optBtn.Font = Enum.Font.Code
+                optBtn.TextSize = 11
+                optBtn.BorderSizePixel = 0
+                optBtn.TextXAlignment = Enum.TextXAlignment.Left
+                optBtn.ZIndex = 16
+                optBtn.Parent = container
+
+                optBtn.MouseButton1Click:Connect(function()
+                    btn.Text = "  " .. opt .. "  v"
+                    container.Visible = false
+                    callback(opt)
+                end)
+            end
+        end
         container.Visible = not container.Visible
     end)
 end
 
--- Dropdown Auto Mining
-CreateDropdown(mainFrame, 75, "TARGET MINING:", modelOptions, "All", function(selected)
-    selectedMiningTarget = selected
-end)
-
--- Dropdown ESP Model
-CreateDropdown(mainFrame, 105, "ESP MODEL:", espOptions, "All", function(selected)
+-- Dropdown ESP Target
+CreateStandardDropdown(mainFrame, 105, "ESP MODEL:", function()
+    local opts = {"OFF", "All"}
+    for _, name in ipairs(knownBoulderNames) do
+        table.insert(opts, name)
+    end
+    return opts
+end, "All", function(selected)
     selectedESPTarget = selected
     if updateAllESP then updateAllESP() end
 end)
 
 local startButton = Instance.new("TextButton")
 startButton.Size = UDim2.new(0, 140, 0, 30)
-startButton.Position = UDim2.new(0, 10, 0, 140)
+startButton.Position = UDim2.new(0, 10, 0, 145)
 startButton.BackgroundColor3 = Color3.fromRGB(192, 192, 192)
 startButton.Text = "[ START BANG ]"
 startButton.TextColor3 = Color3.fromRGB(0, 0, 0)
@@ -282,7 +430,7 @@ startButton.Parent = mainFrame
 
 local stopButton = Instance.new("TextButton")
 stopButton.Size = UDim2.new(0, 140, 0, 30)
-stopButton.Position = UDim2.new(1, -150, 0, 140)
+stopButton.Position = UDim2.new(1, -150, 0, 145)
 stopButton.BackgroundColor3 = Color3.fromRGB(192, 192, 192)
 stopButton.Text = "[ STOP BANG ]"
 stopButton.TextColor3 = Color3.fromRGB(0, 0, 0)
@@ -293,7 +441,7 @@ stopButton.Parent = mainFrame
 
 local hopButton = Instance.new("TextButton")
 hopButton.Size = UDim2.new(1, -20, 0, 30)
-hopButton.Position = UDim2.new(0, 10, 0, 180)
+hopButton.Position = UDim2.new(0, 10, 0, 185)
 hopButton.BackgroundColor3 = Color3.fromRGB(192, 192, 192)
 hopButton.Text = "[ SERVER HOP ]"
 hopButton.TextColor3 = Color3.fromRGB(0, 0, 128)
@@ -304,7 +452,7 @@ hopButton.Parent = mainFrame
 
 local footerLabel = Instance.new("TextLabel")
 footerLabel.Size = UDim2.new(1, -20, 0, 30)
-footerLabel.Position = UDim2.new(0, 10, 0, 280)
+footerLabel.Position = UDim2.new(0, 10, 0, 320)
 footerLabel.BackgroundTransparency = 1
 footerLabel.Text = "SIKII AAAAAA"
 footerLabel.TextColor3 = Color3.fromRGB(0, 0, 128)
@@ -314,19 +462,16 @@ footerLabel.TextWrapped = true
 footerLabel.Parent = mainFrame
 
 ---------------------------------------------------------
--- 3. HIGHLIGHT & UTILITIES ESP (FORCE TRANSPARENCY LOCK INTEGRATED)
+-- 3. HIGHLIGHT & UTILITIES ESP
 ---------------------------------------------------------
 local voltiteHighlightCache = {}
 
 local function applyBoulderESP(boulder)
     if not (boulder:IsA("Model") or boulder:IsA("BasePart")) then return end
 
-    -- 1. Force Transparency Lock: Memastikan transparansi selalu 0 (Anti-Hide/Transparan)
     for _, child in ipairs(boulder:GetDescendants()) do
         if child:IsA("BasePart") then
             child.Transparency = 0
-            
-            -- Lock real-time jika script game mengubah transparansi
             if not child:FindFirstChild("TransparencyLock") then
                 local tag = Instance.new("BoolValue")
                 tag.Name = "TransparencyLock"
@@ -341,13 +486,12 @@ local function applyBoulderESP(boulder)
         end
     end
 
-    -- 2. Highlights Engine
     local highlight = voltiteHighlightCache[boulder] or boulder:FindFirstChild("BoulderESP")
     if not highlight then
         highlight = Instance.new("Highlight")
         highlight.Name = "BoulderESP"
-        highlight.FillColor = Color3.fromRGB(0, 255, 128)      -- Hijau Neon
-        highlight.OutlineColor = Color3.fromRGB(255, 255, 255)  -- Outline Putih
+        highlight.FillColor = Color3.fromRGB(0, 255, 128)
+        highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
         highlight.FillTransparency = 0.4
         highlight.OutlineTransparency = 0
         highlight.Adornee = boulder
@@ -355,7 +499,6 @@ local function applyBoulderESP(boulder)
         voltiteHighlightCache[boulder] = highlight
     end
 
-    -- Dynamic Match berdasarkan pilihan Dropdown ESP
     if selectedESPTarget == "OFF" then
         highlight.Enabled = false
     elseif selectedESPTarget == "All" then
@@ -639,10 +782,13 @@ startButton.MouseButton1Click:Connect(function()
         isSequenceRunning = true
 
         while isSequenceRunning do
+            -- Re-scan workspace setiap loop untuk menangkap model yang baru saja di-stream oleh game
+            RefreshScannedNames()
+
             currentTargetModel = GetNextTarget()
 
             if not currentTargetModel or not currentTargetModel.Parent then
-                statusLabel.Text = "> ALL TARGETS CLEARED! WAITING..."
+                statusLabel.Text = "> NO MATCHED TARGETS! WAITING..."
                 statusLabel.TextColor3 = Color3.fromRGB(0, 255, 255)
                 task.wait(2)
                 continue
@@ -702,50 +848,36 @@ startButton.MouseButton1Click:Connect(function()
 
             removePositionLock(character)
 
-            statusLabel.Text = "> EQUIPPING PICKAXE..."
+            statusLabel.Text = "> EQUIPPING PICKAXE (SLOT 1)..."
             statusLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 
-            local pickaxeTool = nil
-            local backpack = player:FindFirstChildOfClass("Backpack")
-            local playerData = player:FindFirstChild("PlayerData")
-            local invPickaxes = playerData and playerData:FindFirstChild("Inventory") and playerData.Inventory:FindFirstChild("Pickaxes")
+            -- 1. Simulasi Tekan Tombol '1' di Keyboard via VirtualInputManager
+            pcall(function()
+                local vim = game:GetService("VirtualInputManager")
+                vim:SendKeyEvent(true, Enum.KeyCode.One, false, game)
+                task.wait(0.05)
+                vim:SendKeyEvent(false, Enum.KeyCode.One, false, game)
+            end)
 
-            local targetPickaxeName = nil
-            if invPickaxes then
-                local equippedValue = invPickaxes:FindFirstChild("Equipped") or invPickaxes:FindFirstChildOfClass("StringValue")
-                if equippedValue and equippedValue:IsA("ValueBase") then
-                    targetPickaxeName = tostring(equippedValue.Value)
-                else
-                    local firstPick = invPickaxes:GetChildren()[1]
-                    if firstPick then targetPickaxeName = firstPick.Name end
-                end
-            end
+            task.wait(0.2)
 
-            if backpack then
-                if targetPickaxeName then
-                    pickaxeTool = backpack:FindFirstChild(targetPickaxeName) or character:FindFirstChild(targetPickaxeName)
-                end
+            -- 2. Fallback: Jika slot 1 belum ter-equip ke Character, panggil dari Backpack slot pertama
+            local character = player.Character
+            local currentTool = character and character:FindFirstChildOfClass("Tool")
+
+            if not currentTool then
+                local backpack = player:FindFirstChildOfClass("Backpack")
+                local humanoid = character and character:FindFirstChildOfClass("Humanoid")
                 
-                if not pickaxeTool then
-                    for _, item in ipairs(backpack:GetChildren()) do
-                        if item:IsA("Tool") and string.find(item.Name:lower(), "pickaxe") then
-                            pickaxeTool = item
-                            break
-                        end
+                if backpack and humanoid then
+                    local firstTool = backpack:GetChildren()[1]
+                    if firstTool and firstTool:IsA("Tool") then
+                        humanoid:EquipTool(firstTool)
                     end
                 end
             end
 
-            if pickaxeTool and pickaxeTool:IsA("Tool") then
-                humanoid:EquipTool(pickaxeTool)
-                task.wait(0.3)
-            else
-                local invTool = invPickaxes and invPickaxes:FindFirstChildOfClass("Tool")
-                if invTool then
-                    humanoid:EquipTool(invTool)
-                    task.wait(0.3)
-                end
-            end
+            task.wait(0.3)
 
             isDiggingActive = true
             statusLabel.Text = "> MINING: " .. currentTargetModel.Name
